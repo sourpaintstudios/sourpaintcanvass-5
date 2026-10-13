@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { savePainting } from "@/lib/paint/db";
+import { Hand } from "@/lib/paint/hand";
 import { SourPaintListener, micReason, takePrimed } from "@/lib/paint/listener";
-import { Painter } from "@/lib/paint/painter";
 import { PracticePlayer } from "@/lib/paint/practice";
 import { startSessionRecorder, type SessionRecorder } from "@/lib/paint/record";
 import { FluidSession } from "@/lib/fluid/engine";
@@ -50,10 +50,8 @@ export function StageScreen({ config }: { config: SessionConfig }) {
     let practice: PracticePlayer | null = null;
     const frames: PaintFrame[] = [];
     const fluid = null as FluidSession | null;
-    const painter = new Painter(config, (Math.random() * 1e9) >>> 0 || 1, true);
-    painter?.begin();
-    if (painter) painter.composite(ctx, canvas.width, canvas.height);
-    else fluid?.draw(ctx, canvas.width, canvas.height);
+    const hand = new Hand(ctx, canvas.width, canvas.height);
+    hand.begin();
     let recorder: SessionRecorder | null = null;
     let recording = false;
     const started = performance.now();
@@ -144,7 +142,7 @@ export function StageScreen({ config }: { config: SessionConfig }) {
         if (fluid) {
           fluid.draw(ctx, canvas.width, canvas.height);
           fluid.stop();
-        } else painter?.composite(ctx, canvas.width, canvas.height);
+        }
         await new Promise((resolve) => window.setTimeout(resolve, 200));
         const cuts = (await recorder?.stop()) ?? null;
         videoBlob = cuts?.full ?? null;
@@ -153,12 +151,12 @@ export function StageScreen({ config }: { config: SessionConfig }) {
         video90 = cuts?.s90 ?? null;
         listener?.stop();
         listener = null;
-        const png = fluid
-          ? await blobFromCanvas(canvas)
-          : await painter!.exportPrint();
-        const thumb = fluid
-          ? await blobFromCanvas(canvas, "image/jpeg", 0.72)
-          : await painter!.exportBlob("image/jpeg", 360, 640, 0.72);
+        const png = await blobFromCanvas(canvas);
+        const thumbCanvas = document.createElement("canvas");
+        thumbCanvas.width = 360;
+        thumbCanvas.height = 640;
+        thumbCanvas.getContext("2d")?.drawImage(canvas, 0, 0, 360, 640);
+        const thumb = await blobFromCanvas(thumbCanvas, "image/jpeg", 0.72);
         const subject = config.subject.trim();
         const title = subject || "Untitled";
         const id = crypto.randomUUID();
@@ -221,16 +219,19 @@ export function StageScreen({ config }: { config: SessionConfig }) {
         fluid.step(now);
         fluid.draw(ctx, canvas.width, canvas.height);
         lastFrame = { ...SILENT_FRAME, level: fluid.ampNow, sounding: fluid.ampNow > 0.08 };
-      } else if (painter) {
-      if (practice) frames.push(practice.frame(now));
-      if (frames.length === 0) painter.tick(now, null);
-      while (frames.length) {
-        const frame = frames.shift();
-        if (!frame) break;
-        lastFrame = frame;
-        painter.tick(now, frame);
-      }
-      painter.composite(ctx, canvas.width, canvas.height);
+      } else {
+        if (practice) frames.push(practice.frame(now));
+        let heard = frames.length ? frames[frames.length - 1] : null;
+        let struck = false;
+        while (frames.length) {
+          const frame = frames.shift();
+          if (!frame) break;
+          lastFrame = frame;
+          heard = frame;
+          if (frame.onset) struck = true;
+        }
+        if (heard && struck) heard = { ...heard, onset: true };
+        hand.tick(now, heard);
       }
       recorder?.note(now - started);
       if (now - lastHud > 100) {
